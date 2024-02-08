@@ -1,0 +1,156 @@
+package main
+
+import (
+	"archive/tar"
+	"bytes"
+	"database/sql"
+	"io"
+	"log"
+	"net/http"
+	"os"
+	"pkg_registry/db"
+	"pkg_registry/server"
+	"strconv"
+	"strings"
+
+	_ "github.com/mattn/go-sqlite3"
+	"github.com/xi2/xz"
+)
+
+const CONTROL_BYTES_LEN = 132
+const CONTROL_FILE_SIZE_OFFSET = 120
+const CONTROL_FILE_SIZE_END = 130
+
+type Pkg struct {
+	name    string
+	version string
+	arch    string
+}
+
+type uploadService struct {
+	db *sql.DB
+}
+
+func check(err error) {
+	if err != nil {
+		log.Fatal(err)
+	}
+}
+
+func readControlFile(r io.Reader) ([]byte, []byte) {
+	controlBytes := make([]byte, CONTROL_BYTES_LEN)
+	_, err := r.Read(controlBytes)
+	check(err)
+	cfSize, err := strconv.Atoi(strings.Trim(string(controlBytes[CONTROL_FILE_SIZE_OFFSET:CONTROL_FILE_SIZE_END]), " "))
+	check(err)
+	log.Printf("control file size %d", cfSize)
+	controlFile := make([]byte, cfSize)
+	_, err = r.Read(controlFile)
+	check(err)
+	return controlBytes, controlFile
+}
+
+func unzipControlFile(controlFile []byte) []byte {
+
+	reader, err := xz.NewReader(bytes.NewReader(controlFile), 0)
+	tarReader := tar.NewReader(reader)
+	check(err)
+	for true {
+		header, err := tarReader.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			log.Fatalf("ExtractTarGz: Next() failed: %s", err.Error())
+		}
+		switch header.Typeflag {
+		case tar.TypeDir:
+			log.Printf("found dir with name %s", header.Name)
+		case tar.TypeReg:
+			if header.Name == "./control" || header.Name == "control" {
+				curFile, err := io.ReadAll(tarReader)
+				if err != nil {
+					log.Fatalf("ExtractTarGz: Copy() failed: %s", err.Error())
+				}
+				return curFile
+			}
+		default:
+			log.Fatalf("ExtractTarGz: uknown type: %b in %s", header.Typeflag, header.Name)
+		}
+	}
+	panic("control file not found:")
+}
+
+func parseControlFile(controlFile string) Pkg {
+	pkgLines := strings.Split(controlFile, "\n")
+	pkgMap := make(map[string]string)
+	for _, line := range pkgLines {
+		args := strings.Split(line, ": ")
+		if len(args) == 2 {
+			pkgMap[args[0]] = strings.Trim(args[1], " ")
+		}
+	}
+	return Pkg {
+		name: pkgMap["Package"],
+		version: pkgMap["Version"],
+		arch: pkgMap["Architecture"],
+	}
+}
+
+func (us uploadService) savePkg(pkg Pkg) {
+	db.InsertPackage(us.db, pkg.name, pkg.version, pkg.arch, "filepath", 1, 1)
+}
+
+func (us uploadService) displayPkgs() {
+	db.DisplayPackages(us.db)
+}
+
+func (us uploadService) uploadHandler(w http.ResponseWriter, r *http.Request) {
+
+	controlBytes, controlFile := readControlFile(r.Body)
+
+	unzippedControlFile := unzipControlFile(controlFile)
+	pkg := parseControlFile(string(unzippedControlFile))
+	log.Printf("parsed pkg = %s", pkg)
+	us.savePkg(pkg)
+	us.displayPkgs()
+
+	bodyRest, err := io.ReadAll(r.Body)
+
+	body := append(controlBytes, controlFile...)
+	body = append(body, bodyRest...)
+	file, err := os.Create("debfile.deb")
+	if err != nil {
+		log.Fatal(err)
+	}
+	log.Printf("writing deb package")
+	file.Write(body)
+	defer file.Close()
+}
+
+func main() {
+	db := dbInit()
+	uploadService := uploadService {
+		db: db,
+	}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/upload", uploadService.uploadHandler)
+
+	if err := http.ListenAndServe(":4500", mux); err != nil {
+		log.Fatal(err)
+	}
+	server.Run()
+}
+
+func dbInit() *sql.DB {
+	db_conn, err := sql.Open("sqlite3", "test.db")
+	if err != nil {
+		log.Fatal(err)
+	}
+	db.CreatePackageTable(db_conn)
+	db.CreateReleaseTable(db_conn)
+	db.CreateRepositoryTable(db_conn)
+
+	return db_conn
+}
