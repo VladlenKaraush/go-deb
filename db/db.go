@@ -5,16 +5,41 @@ import (
 	"log"
 )
 
-func executeStatement(db *sql.DB, sql_statement string) {
-	statement, err := db.Prepare(sql_statement) // Prepare SQL Statement
+type DbRepo struct {
+	dbConn *sql.DB
+}
+
+type PkgDao struct {
+	id int
+	repository_id int
+	release_id int
+	name string
+	version string
+	architecture string
+	file_path string
+	description string
+}
+
+
+func CreateDbRepo() DbRepo {
+	db_conn, err := sql.Open("sqlite3", "test.db")
+	if err != nil {
+		log.Fatal(err)
+	}
+	repo := DbRepo { dbConn: db_conn }
+	return repo
+}
+
+func (db *DbRepo)executeStatement(sql_statement string) {
+	statement, err := db.dbConn.Prepare(sql_statement) // Prepare SQL Statement
 	if err != nil {
 		log.Fatal(err.Error())
 	}
-	statement.Exec() // Execute SQL Statements
+	statement.Exec() 
 }
 
-func CreatePackageTable(db *sql.DB) {
-	createStudentTableSQL := `CREATE TABLE packages (
+func (db *DbRepo) CreatePackageTable() {
+	createStudentTableSQL := `CREATE TABLE IF NOT EXISTS packages (
 		"idPackage" integer NOT NULL PRIMARY KEY AUTOINCREMENT,		
 		"repository_id" integer NOT NULL,
 		"release_id" integer NOT NULL,		
@@ -26,52 +51,39 @@ func CreatePackageTable(db *sql.DB) {
 	  );` // SQL Statement for Create Table
 
 	log.Println("Create packages table...")
-	executeStatement(db, createStudentTableSQL)
+	db.executeStatement(createStudentTableSQL)
 	log.Println("packages table created")
 }
 
-func CreateRepositoryTable(db *sql.DB) {
-	createStudentTableSQL := `CREATE TABLE repositories (
+func (db *DbRepo) CreateRepositoryTable() {
+	createStudentTableSQL := `CREATE TABLE IF NOT EXISTS repositories (
 		"id" integer NOT NULL PRIMARY KEY AUTOINCREMENT,		
 		"folder_id" integer NOT NULL ,
 		"name" TEXT NOT NULL 
 	  );` // SQL Statement for Create Table
 
 	log.Println("Create repositories table...")
-	executeStatement(db, createStudentTableSQL)
+	db.executeStatement(createStudentTableSQL)
 	log.Println("packages repositories created")
 }
 
-func CreateReleaseTable(db *sql.DB) {
-	createStudentTableSQL := `CREATE TABLE releases (
+func (db *DbRepo) CreateReleaseTable() {
+	createStudentTableSQL := `CREATE TABLE IF NOT EXISTS releases (
 		"id" integer NOT NULL PRIMARY KEY AUTOINCREMENT,		
 		"repository_id" integer NOT NULL ,
 		"suite" TEXT NOT NULL 
 	  );` // SQL Statement for Create Table
 
 	log.Println("Create releaseas table...")
-	executeStatement(db, createStudentTableSQL)
+	db.executeStatement(createStudentTableSQL)
 	log.Println("packages releaseas created")
 }
-func CreateStudentTable(db *sql.DB) {
-	createStudentTableSQL := `CREATE TABLE student (
-		"idStudent" integer NOT NULL PRIMARY KEY AUTOINCREMENT,		
-		"code" TEXT,
-		"name" TEXT,
-		"program" TEXT		
-	  );` // SQL Statement for Create Table
 
-	log.Println("Create student table...")
-	executeStatement(db, createStudentTableSQL)
-	log.Println("student table created")
-}
-
-func InsertPackage(db *sql.DB, name, version, arch, file_path string, repo_id, release_id int) {
+func (db *DbRepo) InsertPackage(name, version, arch, file_path string, repo_id, release_id int) {
 	log.Println("Inserting package record ...")
 	insertStudentSQL := `INSERT INTO packages(repository_id, release_id, name, version, architecture, file_path) 
 		VALUES (?, ?, ?, ?, ?, ?)`
-	statement, err := db.Prepare(insertStudentSQL) // Prepare statement.
-	// This is good to avoid SQL injections
+	statement, err := db.dbConn.Prepare(insertStudentSQL)
 	if err != nil {
 		log.Fatalln(err.Error())
 	}
@@ -81,55 +93,19 @@ func InsertPackage(db *sql.DB, name, version, arch, file_path string, repo_id, r
 	}
 }
 
-// We are passing db reference connection from main to our method with other parameters
-func InsertStudent(db *sql.DB, code string, name string, program string) {
-	log.Println("Inserting student record ...")
-	insertStudentSQL := `INSERT INTO student(code, name, program) VALUES (?, ?, ?)`
-	statement, err := db.Prepare(insertStudentSQL) // Prepare statement.
-	// This is good to avoid SQL injections
-	if err != nil {
-		log.Fatalln(err.Error())
-	}
-	_, err = statement.Exec(code, name, program)
-	if err != nil {
-		log.Fatalln(err.Error())
-	}
-}
-
-func DisplayPackages(db *sql.DB) {
-	log.Println("printing packages:")
-	row, err := db.Query("SELECT * FROM packages ORDER BY name")
+func (db *DbRepo) GetPackages(repoId, releaseId int) []PkgDao {
+	row, err := db.dbConn.Query("SELECT * FROM packages WHERE repository_id = ? and release_id = ?", repoId, releaseId)
 	if err != nil {
 		log.Fatal(err)
 	}
+	var pkgs []PkgDao
 	defer row.Close()
 	for row.Next() { // Iterate and fetch the records from result cursor
-		var id int
-		var repo_id int
-		var release_id int
-		var name string
-		var version string
-		var arch string
-		var file_path string
-		var description string
-		row.Scan(&id, &repo_id, &release_id, &name, &version, &arch, &file_path, &description)
-		log.Printf("Pkg -  id: %d, repo: %d, release: %d, name: %s, ver: %s, arch: %s, path: %s, desc: %s \n",
-			id, repo_id, release_id, name, version, arch, file_path, description)
+		pkg := PkgDao {}
+		row.Scan(&pkg.id, &pkg.repository_id, &pkg.release_id, &pkg.name, 
+			&pkg.version, &pkg.architecture, &pkg.file_path, &pkg.description)
+		log.Println("pkg = ", pkg)
+		pkgs = append(pkgs, pkg)
 	}
-}
-
-func DisplayStudents(db *sql.DB) {
-	row, err := db.Query("SELECT * FROM student ORDER BY name")
-	if err != nil {
-		log.Fatal(err)
-	}
-	defer row.Close()
-	for row.Next() { // Iterate and fetch the records from result cursor
-		var id int
-		var code string
-		var name string
-		var program string
-		row.Scan(&id, &code, &name, &program)
-		log.Println("Student: ", code, " ", name, " ", program)
-	}
+	return pkgs
 }
